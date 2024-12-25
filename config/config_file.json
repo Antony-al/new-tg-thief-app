@@ -1,0 +1,12 @@
+{
+    "api_id": "28796334",
+    "api_hash": "7b7e24aad6fb7ae38fb70cb3c82bb398",
+    "bot_token" : "8146979031:AAHN4t1d9U3fBSeffOCJtsEiMiSFeVjbOd0",
+    "review_chat_id" : "362768877",
+    "channels_to_monitor": [
+        "t.me/eternalclassic",
+        "t.me/itvbia"
+    ],
+    "my_channel": "t.me/meme_the_best",
+    "my_channel_id" : "-1002402993624"
+}
