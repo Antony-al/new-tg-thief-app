@@ -7,6 +7,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
 from telethon import TelegramClient  # Библиотека для работы с Telegram-клиентом
+from aiogram.types.input_file import FSInputFile
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument  # Типы медиа в Telethon
 
 # Инициализация Telegram-клиента через Telethon
@@ -141,7 +142,7 @@ def create_approve_reject_keyboard(from_channel_id, message_id):
     return InlineKeyboardMarkup(inline_keyboard=[[approve_button, reject_button]])
 
 # Асинхронная логика бота для обработки сообщений с кнопками
-async def send_message_with_buttons(chat_id, message, media_path=None):
+async def send_message_with_buttons(chat_id, message, media_path):
     """
     Отправка сообщения с кнопками "Запостить" и "Отклонить".
     """
