@@ -1,7 +1,9 @@
 import os  # Модуль для работы с файловой системой
 import re  # Регулярные выражения
-import db.db
+import db.meme_db
 import asyncio  # Модуль для работы с асинхронным кодом в Python
+import datetime
+import uuid
 from config.config_ import api_id, api_hash, bot_token, channels_to_monitor, ad_keywords, link_pattern, review_chat_id, my_channel_id
 # Библиотека для работы с Telegram Bot API
 from aiogram import Bot, Dispatcher, Router, types
@@ -12,6 +14,7 @@ from telethon import TelegramClient  # Библиотека для работы 
 from aiogram.types.input_file import FSInputFile
 # Типы медиа в Telethon
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
+
 
 # Инициализация Telegram-клиента через Telethon
 client = TelegramClient(
@@ -44,7 +47,10 @@ class MemeActionCallback(CallbackData, prefix="meme"):
     from_channel_id: str
     channel_id: str
     message_id: int
+    post_id: int
 
+def generate_unique_id():
+    return str(uuid.uuid4()) 
 
 def get_channel_media_folder(channel_name):
     """
@@ -64,7 +70,7 @@ def get_channel_media_folder(channel_name):
     return channel_folder
 
 
-async def save_media_on_disk(message, channel):
+async def save_media(message, channel):
     """
     Сохраняет медиа-файлы (фото или документы) из сообщения.
 
@@ -98,6 +104,11 @@ async def filter_and_save_message(message, channel):
     - message: сообщение из канала
 
     """
+    
+    if await db.meme_db.is_posted(channel, message.id):
+        print(f"Сообщение с id {message.id} уже было скачано")
+        return
+    
     # Проверка на ключевые слова
     if any(keyword.lower() in message.text.lower() for keyword in ad_keywords):
         # Логируем
@@ -113,7 +124,12 @@ async def filter_and_save_message(message, channel):
 
     # Сохраняем медиа, если оно есть
     if message.media:
-        await save_media(message, channel)
+        media_path = await save_media(message, channel)
+        nowDt = datetime.datetime.now()
+        post_id = await db.meme_db.save_post_info(channel, message.id, media_path, nowDt)
+        if isinstance(post_id, tuple):
+            post_id = post_id[0]
+        return post_id
     else:
         # Логируем текст сообщения
         print(f"Текстовое сообщение: {message.text}")
@@ -133,7 +149,7 @@ async def process_callback(callback_query: types.CallbackQuery, callback_data: M
     action = callback_data.action
     channel_id = callback_data.from_channel_id
     message_id = callback_data.message_id
-
+    post_id = callback_data.post_id
     if action == 'approve':
         # async with aiosqlite.connect(db_name) as db:
         #     async with db.execute("SELECT media_path, caption FROM queue WHERE channel_id = ? AND message_id = ?",
@@ -141,8 +157,12 @@ async def process_callback(callback_query: types.CallbackQuery, callback_data: M
         #         result = await cursor.fetchone()
         #         if result:
         #             media_path, caption = result
+        media_path = await db.meme_db.get_media_path(post_id)
+        if isinstance(media_path, tuple):
+            media_path = media_path[0]
+    
         file = FSInputFile(media_path)
-        await bot.send_document(my_channel, file, caption=caption)
+        await bot.send_document(my_channel_id, file)
         # await mark_as_posted(channel_id, message_id)
         # await db.execute("DELETE FROM queue WHERE channel_id = ? AND message_id = ?", (channel_id, message_id))
         # await db.commit()
@@ -174,15 +194,15 @@ async def process_callback(callback_query: types.CallbackQuery, callback_data: M
 # Создание кнопок
 
 
-def create_approve_reject_keyboard(from_channel_id, message_id):
+def create_approve_reject_keyboard(from_channel_id, message_id, post_id):
     # Преобразуем channel_id в строку, если это необходимо
     my_channel_id_str = str(my_channel_id)
     print("my_channel_id_str", my_channel_id_str)
     print("from_channel_id", from_channel_id)
     approve_callback = MemeActionCallback(action="approve", from_channel_id=str(
-        from_channel_id), channel_id=my_channel_id_str, message_id=message_id).pack()
+        from_channel_id), channel_id=my_channel_id_str, message_id=message_id, post_id=post_id).pack()
     reject_callback = MemeActionCallback(action="reject", from_channel_id=str(
-        from_channel_id), channel_id=my_channel_id_str, message_id=message_id).pack()
+        from_channel_id), channel_id=my_channel_id_str, message_id=message_id, post_id=post_id).pack()
 
     approve_button = InlineKeyboardButton(
         text="Запостить", callback_data=approve_callback)
@@ -193,11 +213,20 @@ def create_approve_reject_keyboard(from_channel_id, message_id):
 # Асинхронная логика бота для обработки сообщений с кнопками
 
 
-async def send_message_with_buttons(from_channel_id, message, media_path):
+async def send_message_with_buttons(from_channel_id, message, post_id):
     """
     Отправка сообщения с кнопками "Запостить" и "Отклонить".
     """
-    markup = create_approve_reject_keyboard(from_channel_id, message.id)
+    
+    media_path = await db.meme_db.get_media_path(post_id)
+    if isinstance(media_path, tuple):
+        media_path = media_path[0]
+    
+    if media_path is None:
+        print("Ошибка: media_path отсутствует.")
+        return
+    
+    markup = create_approve_reject_keyboard(from_channel_id, message.id, post_id)
 
     if media_path:
         print("Media path: ", media_path)
@@ -223,30 +252,38 @@ async def fetch_latest_messages():
 
         async for message in client.iter_messages(channel, limit=5):
             if message.media:
-                file_path = await filter_and_save_message(message, channel)
+                post_id = await filter_and_save_message(message, channel)
+                if post_id is None:
+                    continue
                 # Отправляем мем в личку с кнопками
-                await send_message_with_buttons(from_channel_id=channel.id, message=message, media_path=file_path)
+                print(f"Post_id = {post_id}")
+                await send_message_with_buttons(from_channel_id=channel, message=message, post_id=post_id)
             else:
                 print(f"Текстовое сообщение: {message.text}")
 
 
-async def main():
-    """
-    Основная точка входа в асинхронную логику программы.
+# async def main():
+#     """
+#     Основная точка входа в асинхронную логику программы.
 
-    Действия:
-    - Вызывает функцию для получения и обработки сообщений.
-    """
-    await fetch_latest_messages()
+#     Действия:
+#     - Вызывает функцию для получения и обработки сообщений.
+#     """
+#     await fetch_latest_messages()
 
-    """for test"""
-    # channel = "t.me/dvachannel"
-    # await filter_and_save_messages(channel)
+#     """for test"""
+#     # channel = "t.me/dvachannel"
+#     # await filter_and_save_messages(channel)
 
 
 async def main():
     await client.start()  # Подключаем и авторизуем клиента
-    await fetch_latest_messages()  # Асинхронный код для получения сообщений
+    await db.meme_db.setup_database()
+    try:
+        await fetch_latest_messages()  # Асинхронный код для получения сообщений
+    finally:
+        client.disconnect()
+        
 
 if __name__ == '__main__':
 
